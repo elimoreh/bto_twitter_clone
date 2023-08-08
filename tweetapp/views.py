@@ -12,29 +12,44 @@ from nltk.corpus import stopwords
 from django.http import JsonResponse
 # Create your views here.
 
+STOP_WORDS = set(stopwords.words('english'))
 
-def trendingView(request):
-    stop_words = set(stopwords.words('english'))
-    tweets = Tweet.objects.all()
+
+# cache this so it's only updated every three minutes.
+def _get_trending_topics() -> list[tuple]:
+    # scope our trending tweets to the last 3 hours only
+    datetime_bound = datetime.now() - timedelta(hours=3)
+    # [{ "content": 'tweet content' }, {}]
+    tweet_contents = Tweet.objects.filter(updated__gte=datetime_bound).values_list("content")
+
     words = []
-    for tweet in tweets:
+    for tweet_content in tweet_contents:
+        tweet = tweet_content['content']
         # Extract words from post content and filter out stop words
         words.extend([
             word.lower() for word in re.findall(r'\w+', tweet.content)
-            if word.lower() not in stop_words
+            if word.lower() not in STOP_WORDS
         ])
-
         # Extract hashtags from post content
         hashtags = re.findall(r'#\w+', tweet.content)
         words.extend(hashtags)
         word_count = Counter(words)
-        trending_words = word_count.most_common(10)
+    return word_count.most_common(10)
+
+
+
+
+def trendingView(request):
+    trending_words = _get_trending_topics()
        
     trending_tweets_count = []
     for word in trending_words:
+        # filter tweets to include only last 3 hours
+        # Get tweets that contain any of the words and group them by their content in-memory
         count = Tweet.objects.filter(content__icontains=word[0]).count()
         trending_tweets_count.append(count)
 
+    # this is not an HTTP response object or a JSON object for AJAX call
     return zip(trending_words, trending_tweets_count)
 
 
@@ -45,15 +60,20 @@ def tweetUpload(request):
         tweet_form = TweetForm(request.POST)
         images = request.FILES.getlist('file')
         if tweet_form.is_valid():
+            # we can assign the user in the TweetForm
             new_tweet = tweet_form.save(commit=False)
             new_tweet.author = request.user
             new_tweet.save()
 
+            # saving the tweet and its media should be transactional
             for i in images:
                 tweet_image = TweetMedia(tweet=new_tweet, image=i)
                 tweet_image.save()
             messages.success(request, "Tweet has been uploaded ")
             return redirect("index")
+            # In the case of a failed save, show the user an error message
+        else:
+            pass # return if tweet is not valid
 
 
 def tweetDetail(request, username, pk):
